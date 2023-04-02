@@ -1,77 +1,77 @@
 import streamlit as st
-import requests
-from io import BytesIO
-from deepdreamgenerator import deepdreamgenerator
-from moviepy.editor import *
+import transformers
+import numpy as np
+import imageio
+import tensorflow as tf
+from transformers import GPTNeoForCausalLM, GPT2Tokenizer
+from tensorflow.keras.applications.inception_v3 import InceptionV3
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from transformers import GPTNeoForCausalLM, GPT2Tokenizer
 
-os.environ['IMAGEIO_FFMPEG_EXE'] = os.path.join("path", "to", "ffmpeg.exe")
+model_name = "EleutherAI/gpt-neo-125M"
+tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+model = GPTNeoForCausalLM.from_pretrained(model_name, from_tf=False, pad_token_id=tokenizer.eos_token_id)
 
-WPM = 200 # palabras por minuto
-CLIP_DURATION = 5 # duración en segundos de cada clip de video
+model_inception = InceptionV3(include_top=False, pooling='avg')
 
-def generate_story(length):
-    response = requests.get(f"https://api.chatterscan.com/gpt3?model=curie-instruct-beta-001&length={length}")
-    return response.json()["text"].split("\n\n")
+def generate_text(prompt):
+    input_ids = tokenizer.encode(prompt, return_tensors='tf')
+    text = model.generate(input_ids=input_ids, max_length=100, do_sample=True, temperature=0.7)
+    return tokenizer.decode(text[0])
 
-def generate_voiceover(paragraph):
-    # Generar una voz en off a partir del párrafo usando una API de síntesis de voz
-    # (por ejemplo, Google Text-to-Speech o Amazon Polly)
-    voiceover = ... # código para generar la voz en off
-    return voiceover
+def generate_text_and_images(idea):
+    # Generar el texto
+    text = generate_text(idea)
 
-def generate_video(story):
-    clips = []
-    for i, paragraph in enumerate(story):
-        # Generar la imagen de sueño profundo correspondiente al párrafo
-        imagebytes = deepdreamgenerator(paragraph)
-        imageclip = ImageClip(BytesIO(imagebytes)).resize(height=720)
+    # Dividir el texto en párrafos
+    paragraphs = text.split('\n\n')
 
-        # Generar la voz en off correspondiente al párrafo y calcular la duración del clip
-        voiceover = generate_voiceover(paragraph)
-        num_words = len(paragraph.split())
-        clip_duration = num_words / WPM
+    # Generar las imágenes
+    images = []
+    for paragraph in paragraphs:
+        # Generar la imagen utilizando GAN
+        noise = np.random.normal(0, 1, (1, 2048))
+        text_sequence = tokenizer.texts_to_sequences([paragraph])
+        text_padded = pad_sequences(text_sequence, maxlen=2048, padding='post', truncating='post')
+        text_feature = model([tf.constant(text_padded), tf.constant(noise)])
+        img = text_feature.numpy()[0]
+        img = img.reshape(299, 299, 3)
+        img = np.uint8(img * 255)
 
-        # Crear el clip de video compuesto por la imagen y la voz en off
-        audio = AudioFileClip(voiceover).set_duration(clip_duration)
-        audio = audio.set_start(0) # empezar al principio del clip
-        imageclip = imageclip.set_duration(clip_duration)
-        imageclip = imageclip.set_start(0) # empezar al principio del clip
-        compositeclip = CompositeVideoClip([imageclip, audio.set_pos(('center', 'bottom'))])
+        # Preprocesar la imagen utilizando Inception
+        img_inception = imageio.imresize(img, (299, 299))
+        img_inception = img_inception.astype('float32')
+        img_inception = img_inception / 255.0
+        img_inception = np.expand_dims(img_inception, axis=0)
+        feature = model_inception.predict(img_inception)
 
-        clips.append(compositeclip)
+        # Agregar la imagen a la lista de imágenes
+        images.append(feature)
 
-    # Concatenar los clips de video para crear el video completo
-    videoclip = concatenate_videoclips(clips)
+    # Unir las imágenes en un GIF
+    gif = np.concatenate(images, axis=0)
+    gif = np.uint8(gif * 255)
+    gif = np.array([imageio.core.util.Image(gif[i, :, :, :]) for i in range(gif.shape[0])])
 
-    # Guardar el video en un archivo
-    videofilename = "story.mp4"
-    videoclip.write_videofile(videofilename, fps=24)
+    return paragraphs, gif
 
-    return videofilename
+# Crear interfaz de usuario con Streamlit
+st.title('Generador de Texto e Imágenes')
 
+# Pedir la idea del usuario
+idea = st.text_input('Escribe tu idea aquí', '')
 
-st.title("Generador de Historias")
-st.write("Este es un generador automático de historias. Ingresa tu idea principal y presiona el botón para generar una historia aleatoria y un video personalizado.")
-idea_principal = st.text_input("Ingresa tu idea principal")
-if st.button("Generar Historia"):
-    length = 5
-    story = generate_story(idea_principal, length)
-    st.write("Historia generada:")
-    for i, paragraph in enumerate(story):
-        st.write(f"{i+1}. {paragraph}")
-    st.write("Generando video…")
-    videofilename = generate_video(story)
-    st.write("Video generado:")
-    videofile = open(videofilename, "rb")
-    videobytes = videofile.read()
-    st.video(videobytes)
-    st.write("Previsualizando video…")
-    preview_clip = VideoFileClip(videofilename).subclip(0, 10)
-    preview_clip = preview_clip.resize(height=360)
-    preview_file = "preview.mp4"
-    preview_clip.write_videofile(preview_file, fps=24)
-    preview_file = open(preview_file, "rb")
-    preview_bytes = preview_file.read()
-    st.video(preview_bytes)
-else:
-    st.write("Ingresa tu idea principal y presiona el botón para generar una historia y video personalizados.")
+# Generar el texto y las imágenes
+if idea:
+    paragraphs, gif = generate_text_and_images(idea)
+
+    # Mostrar los párrafos
+    st.write('**Texto generado:**')
+    for paragraph in paragraphs:
+        st.write(paragraph)
+
+    # Mostrar el GIF
+    st.write('**GIF generado:**')
+    with st.spinner('Generando GIF...'):
+        imageio.mimsave('generated.gif', gif, fps=10)
+    st.image('generated.gif', use_column_width=True)
